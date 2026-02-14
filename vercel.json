@@ -2,15 +2,8 @@
   "framework": null,
   "buildCommand": "bash vercel-build.sh",
   "outputDirectory": "build/web",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ],
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
-      ]
-    }
+  "routes": [
+    { "src": "/(.*\\.(?:json|js|mjs|css|png|jpg|jpeg|gif|svg|ico|txt|map|wasm|webmanifest))", "dest": "/$1" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
