@@ -6,13 +6,27 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:intl/intl.dart';
 import 'firebase_options.dart';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
+import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  if (kIsWeb) {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+    await Firebase.initializeApp();
+  } else {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  }
   runApp(const MyApp());
+}
+
+String _buildPrivateRoomId(String a, String b) {
+  return (a.compareTo(b) < 0) ? '${a}_$b' : '${b}_$a';
 }
 
 // Theme Data
@@ -102,6 +116,56 @@ class AppThemes {
           TargetPlatform.android: CupertinoPageTransitionsBuilder(),
           TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
         },
+      ),
+    );
+  }
+}
+
+class CallJoinPage extends StatelessWidget {
+  final String roomId;
+  final String callerName;
+  final String callType;
+  const CallJoinPage({super.key, required this.roomId, required this.callerName, required this.callType});
+
+  String _buildUrl() {
+    final base = 'https://meet.jit.si/$roomId';
+    if (callType == 'audio') {
+      return '$base#config.startWithVideoMuted=true';
+    }
+    return base;
+  }
+
+  Future<void> _join() async {
+    final url = Uri.parse(_buildUrl());
+    await launchUrl(url, mode: LaunchMode.externalApplication);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Join Call'),
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(callType == 'audio' ? Icons.call : Icons.videocam, size: 72, color: Theme.of(context).colorScheme.primary),
+              const SizedBox(height: 16),
+              Text(callType == 'audio' ? 'Audio Call' : 'Video Call', style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: 8),
+              SelectableText(roomId),
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                onPressed: _join,
+                icon: const Icon(Icons.launch),
+                label: const Text('Join Now'),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -333,20 +397,34 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     setState(() => _isLoading = true);
 
     try {
-      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
-      if (googleUser == null) {
-        setState(() => _isLoading = false);
-        return;
+      if (kIsWeb) {
+        try {
+          await _auth.signInWithPopup(GoogleAuthProvider());
+        } on FirebaseAuthException catch (e) {
+          // Fallback for browsers/environments where popups are blocked or not supported
+          if (e.code == 'popup-blocked' ||
+              e.code == 'popup-closed-by-user' ||
+              e.code == 'operation-not-supported-in-this-environment') {
+            await _auth.signInWithRedirect(GoogleAuthProvider());
+            return;
+          } else {
+            rethrow;
+          }
+        }
+      } else {
+        final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+        if (googleUser == null) {
+          setState(() => _isLoading = false);
+          return;
+        }
+        final GoogleSignInAuthentication googleAuth =
+            await googleUser.authentication;
+        final credential = GoogleAuthProvider.credential(
+          accessToken: googleAuth.accessToken,
+          idToken: googleAuth.idToken,
+        );
+        await _auth.signInWithCredential(credential);
       }
-
-      final GoogleSignInAuthentication googleAuth =
-          await googleUser.authentication;
-      final credential = GoogleAuthProvider.credential(
-        accessToken: googleAuth.accessToken,
-        idToken: googleAuth.idToken,
-      );
-
-      await _auth.signInWithCredential(credential);
     } catch (e) {
       setState(() => _isLoading = false);
       if (mounted) {
@@ -960,6 +1038,25 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   const SnackBar(content: Text('Search coming soon!')),
                 );
               },
+            ),
+          if (_currentScreen == 'Users')
+            IconButton(
+              icon: const Icon(Icons.groups),
+              onPressed: () {
+                final uid = _auth.currentUser?.uid ?? '';
+                final roomId = 'group_${uid}_${DateTime.now().millisecondsSinceEpoch}';
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => CallJoinPage(
+                      roomId: roomId,
+                      callerName: _auth.currentUser?.displayName ?? 'Caller',
+                      callType: 'video',
+                    ),
+                  ),
+                );
+              },
+              tooltip: 'Start Group Call',
             ),
           PopupMenuButton<String>(
             onSelected: (value) {
@@ -1656,8 +1753,31 @@ class UsersScreen extends StatelessWidget {
                       icon: const Icon(Icons.phone),
                       color: Theme.of(context).colorScheme.primary,
                       onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Calling $userName...')),
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => CallJoinPage(
+                              roomId: _buildPrivateRoomId(FirebaseAuth.instance.currentUser!.uid, userId),
+                              callerName: user.displayName ?? userName,
+                              callType: 'audio',
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.videocam),
+                      color: Theme.of(context).colorScheme.primary,
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => CallJoinPage(
+                              roomId: _buildPrivateRoomId(FirebaseAuth.instance.currentUser!.uid, userId),
+                              callerName: user.displayName ?? userName,
+                              callType: 'video',
+                            ),
+                          ),
                         );
                       },
                     ),
@@ -1780,17 +1900,30 @@ class _PrivateChatPageState extends State<PrivateChatPage> {
           IconButton(
             icon: const Icon(Icons.phone),
             onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Calling ${widget.otherUserName}...')),
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => CallJoinPage(
+                    roomId: _chatId,
+                    callerName: FirebaseAuth.instance.currentUser?.displayName ?? 'Caller',
+                    callType: 'audio',
+                  ),
+                ),
               );
             },
           ),
           IconButton(
             icon: const Icon(Icons.videocam),
             onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                    content: Text('Video calling ${widget.otherUserName}...')),
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => CallJoinPage(
+                    roomId: _chatId,
+                    callerName: FirebaseAuth.instance.currentUser?.displayName ?? 'Caller',
+                    callType: 'video',
+                  ),
+                ),
               );
             },
           ),
